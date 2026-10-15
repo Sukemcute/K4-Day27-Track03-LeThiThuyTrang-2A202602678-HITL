@@ -93,6 +93,17 @@ with st.sidebar:
                     st.rerun()
         else:
             st.caption("No previous sessions recorded yet.")
+
+        # Bonus Challenge 2: Confidence calibration display
+        st.divider()
+        st.subheader("Calibration (Bonus 2)")
+        from audit.calibration import get_calibration_stats
+        cal = asyncio.run(get_calibration_stats())
+        if cal["total_threads"] > 0:
+            c1, c2 = st.columns(2)
+            c1.metric("Model Conf", f"{cal['avg_confidence']:.0%}")
+            c2.metric("Approval Rate", f"{cal['approval_rate']:.0%}")
+            st.caption(f"Status: **{cal['calibration_status']}**")
     except Exception as e:
         st.caption(f"No previous sessions ({e})")
 

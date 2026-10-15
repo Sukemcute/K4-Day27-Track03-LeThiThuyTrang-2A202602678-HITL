@@ -228,13 +228,57 @@ def _post(state) -> str:
         return "commit_failed"
 
 
+async def node_auto_edit(state):
+    """Bonus Challenge 4: Auto-edit.
+    When the human chooses 'edit', call the LLM again to rewrite the review
+    using human_feedback, then proceed to commit.
+    """
+    console.print("[cyan]-> auto_edit (bonus: rewrite review with human feedback)[/cyan]")
+    t0 = time.monotonic()
+    feedback = state.get("human_feedback") or "Improve comments and make them more constructive"
+    orig: PRAnalysis = state["analysis"]
+    llm = get_llm().with_structured_output(PRAnalysis)
+    with console.status("[dim]LLM rewriting review using human feedback...[/dim]"):
+        rewritten: PRAnalysis = await llm.ainvoke([
+            {
+                "role": "system",
+                "content": (
+                    "You are a senior code reviewer. The human reviewer reviewed your initial review "
+                    "and provided specific feedback/edits. Rewrite the review summary, comments, "
+                    "and update confidence to incorporate the human reviewer's guidance."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"PR Diff:\n{state['pr_diff']}\n\n"
+                    f"Original summary:\n{orig.summary}\n\n"
+                    f"Original comments:\n{[c.model_dump() for c in orig.comments]}\n\n"
+                    f"Reviewer feedback:\n{feedback}"
+                ),
+            },
+        ])
+    console.print(f"  [green][OK][/green] rewritten confidence={rewritten.confidence:.0%}")
+    await audit(state, AuditEntry(
+        agent_id=AGENT_ID,
+        action="auto_edit",
+        confidence=rewritten.confidence,
+        risk_level=risk_level_for(rewritten.confidence),
+        reviewer_id=os.environ.get("GITHUB_USER"),
+        decision="edit",
+        reason=f"Auto-edited with feedback: {feedback[:60]}",
+        execution_time_ms=int((time.monotonic() - t0) * 1000),
+    ))
+    return {"analysis": rewritten}
+
+
 async def node_commit(state):
     console.print("[cyan]-> commit[/cyan]")
     t0 = time.monotonic()
     # Two paths converge here:
-    #   1. human_approval → commit (only post if approved)
+    #   1. human_approval / auto_edit → commit (only post if approved or edited)
     #   2. escalate → synthesize → commit (always post the refined review)
-    if state.get("escalation_answers") or state.get("human_choice") == "approve":
+    if state.get("escalation_answers") or state.get("human_choice") in ("approve", "edit"):
         action = _post(state)
     else:
         console.print(f"  [yellow]·[/yellow] skipping comment (choice={state.get('human_choice')})")
@@ -348,6 +392,7 @@ def build_graph(checkpointer):
     for name, fn in [
         ("fetch_pr", node_fetch_pr), ("analyze", node_analyze), ("route", node_route),
         ("auto_approve", node_auto_approve), ("human_approval", node_human_approval),
+        ("auto_edit", node_auto_edit),
         ("commit", node_commit), ("escalate", node_escalate), ("synthesize", node_synthesize),
     ]:
         g.add_node(name, fn)
@@ -359,7 +404,12 @@ def build_graph(checkpointer):
         {"auto_approve": "auto_approve", "human_approval": "human_approval", "escalate": "escalate"},
     )
     g.add_edge("auto_approve", END)
-    g.add_edge("human_approval", "commit")
+
+    def _route_human(s):
+        return "auto_edit" if s.get("human_choice") == "edit" else "commit"
+
+    g.add_conditional_edges("human_approval", _route_human, {"auto_edit": "auto_edit", "commit": "commit"})
+    g.add_edge("auto_edit", "commit")
     g.add_edge("commit", END)
     g.add_edge("escalate", "synthesize")
     g.add_edge("synthesize", "commit")

@@ -87,12 +87,16 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--thread", help="Replay one thread by id")
     parser.add_argument("--list", action="store_true", help="List recent threads")
+    parser.add_argument("--calibrate", action="store_true", help="Run confidence calibration analysis (Bonus 2)")
     args = parser.parse_args()
 
     if args.list:
         asyncio.run(list_threads())
     elif args.thread:
         asyncio.run(replay(args.thread))
+    elif args.calibrate:
+        from audit.calibration import display_calibration
+        asyncio.run(display_calibration())
     else:
         parser.print_help()
 
